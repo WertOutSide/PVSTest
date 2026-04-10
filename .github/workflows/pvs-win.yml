@@ -1,32 +1,90 @@
-name: PVS-Studio build analysis
-on: workflow_dispatch
+name: PVS-Studio Analysis
+
+on:
+  workflow_dispatch:  # Запуск вручную
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
 jobs:
   build-analyze:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Check out repository code
+      # 1. Скачиваем код
+      - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Install tools
+        
+      # 2. Устанавливаем PVS-Studio
+      - name: Install PVS-Studio
         run: |
-          wget -q -O - https://files.pvs-studio.com/etc/pubkey.txt \
-            | sudo apt-key add -
+          wget -q -O - https://files.pvs-studio.com/etc/pubkey.txt | sudo apt-key add -
           sudo wget -O /etc/apt/sources.list.d/viva64.list \
             https://files.pvs-studio.com/etc/viva64.list
           sudo apt update
-          sudo apt install pvs-studio
-          pvs-studio-analyzer credentials ${{ secrets.PVS_STUDIO_CREDENTIALS }}
-      - name: Build
+          sudo apt install -y pvs-studio
+          
+      # 3. Настраиваем лицензию (ПРАВИЛЬНЫЙ ФОРМАТ!)
+      - name: Configure PVS-Studio license
+        env:
+          PVS_USER: ${{ secrets.PVS_USER }}
+          PVS_KEY: ${{ secrets.PVS_KEY }}
         run: |
-          cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=On -B build .
-          cmake --build build -j
-      - name: Analyze
+          pvs-studio-analyzer credentials --user "$PVS_USER" --key "$PVS_KEY"
+          # Проверка, что лицензия принята
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to configure PVS-Studio license"
+            exit 1
+          fi
+          
+      # 4. Сборка проекта с генерацией compile_commands.json
+      - name: Configure and Build
         run: |
-          pvs-studio-analyzer analyze -f build/compile_commands.json -j
-      - name: Convert report
+          cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build .
+          cmake --build build -j$(nproc)
+          
+      # 5. Запуск анализа
+      - name: Run PVS-Studio analysis
         run: |
-          plog-converter -t sarif -o pvs-report.sarif PVS-Studio.log
-      - name: Publish report
+          # Указываем явный путь к compile_commands.json
+          pvs-studio-analyzer analyze \
+            -f build/compile_commands.json \
+            -j$(nproc) \
+            -o PVS-Studio.log
+          # Показываем, что получилось
+          echo "=== Analysis output ==="
+          ls -la PVS-Studio.log
+          head -20 PVS-Studio.log || true
+          
+      # 6. Конвертация отчёта в SARIF
+      - name: Convert report to SARIF
+        run: |
+          # Явно указываем путь к лог-файлу
+          plog-converter \
+            -t sarif \
+            -o pvs-report.sarif \
+            ./PVS-Studio.log
+          echo "=== SARIF report created ==="
+          ls -la pvs-report.sarif
+          
+      # 7. Загрузка отчёта в GitHub Code Scanning
+      - name: Upload SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: pvs-report.sarif
           category: PVS-Studio
+          
+      # 8. (Опционально) Сохранение HTML-отчёта как артефакта
+      - name: Generate HTML report artifact
+        if: always()
+        run: |
+          plog-converter -t html -o pvs-report.html ./PVS-Studio.log
+          
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvs-studio-report
+          path: pvs-report.html
+          retention-days: 7
