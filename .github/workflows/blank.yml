@@ -1,0 +1,33 @@
+name: PVS-Studio analyze changes
+on:
+  push:
+    paths:
+      - '**.h'
+      - '**.c'
+      - '**.cpp'
+jobs:
+  analyze-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        ....
+      - name: Get list of changed source files
+        run: |
+          echo "$(git diff --name-only \
+            ${{ github.event.before }}..${{ github.event.after }})" \
+            > source-files.txt
+          cat source-files.txt
+      - name: Install tools
+        ....
+      - name: Build
+        run: |
+          cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=On -B build .
+          cmake --build build -j
+      - name: Analyze
+        run: |
+          pvs-studio-analyzer analyze -f build/compile_commands.json \
+                                      -S source-files.txt -j
+      - name: Convert report
+        ....
+      - name: Publish report
+        ....
